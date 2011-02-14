@@ -8,14 +8,14 @@ $:.unshift(File.dirname(__FILE__)) unless $:.include?(File.dirname(__FILE__)) ||
 # This module encapsulates functionality (ad requests, analytics requests) provided by AdMob. See README.txt for usage.
 module AdMob
   
-  GEM_VERSION = '1.1.2'
+  GEM_VERSION = '1.1.0'
 
   ENDPOINT = URI.parse('http://r.admob.com/ad_source.php')
-  PUBCODE_VERSION = '20090714-RUBY-8708a7ab5f2b70b6'
+  PUBCODE_VERSION = '20081105-RUBY-70e4a867449121c5'
   DEFAULT_TIMEOUT = 1.0
 
   # Make an AdMob ad/analytics request. The first param is the request variable from Rails; the second is a unique session
-  # identifier. In general, requests should always be of the form <tt><%= AdMob::request(request, session.session_id, ...) %></tt>.
+  # identifier. In general, requests should always be of the form <tt><%= AdMob::request(request, session, ...) %></tt>.
   # Regardless of how many times AdMob::request is called, only one analytics call will be made per page load.
   # The remaining params set optional features of the request. Params that can be set are:
   #
@@ -38,19 +38,11 @@ module AdMob
   # [<tt>:test</tt>] whether this should issue a test ad request, not a real one
   # [<tt>:timeout</tt>] override the default timeout value for this ad request in seconds, e.g. 2
   # [<tt>:raise_exceptions</tt>] whether to raise exceptions when something goes wrong (defaults to false); exceptions will all be instances of AdMob::Error; a default can be set using <tt>AdMob::config {|c| c.raise_exceptions = true}</tt>
-  def self.request(request, session_id, params = {})
+  def self.request(request, session, params = {})
     raise_exceptions = params[:raise_exceptions].nil? ? AdMob::Defaults.raise_exceptions : params[:raise_exceptions]
     
-    if raise_exceptions and !params[:cookie_domain].nil?
-      raise AdMob::Error.new("Cannot set cookie_domain in AdMob::request(), set the cookie_domain in the call to AdMob::set_cookie()")
-    end
-    
-    if raise_exceptions and !params[:cookie_path].nil?
-      raise AdMob::Error.new("Cannot set cookie_path in AdMob::request(), set the cookie_path in the call to AdMob::set_cookie()")
-    end
-    
     # Build the post request
-    post_data = self.build_post_data(request, session_id, params)
+    post_data = self.build_post_data(request, session, params)
     if post_data.nil?
       raise AdMob::Error.new("AdMob::request called as neither an ad nor an analytics request") if raise_exceptions
       return ''
@@ -94,9 +86,6 @@ module AdMob
   end
 
   # This function should be called from an ActionController to set a cookie on behalf of AdMob.
-  # If you need to override the default cookie domain or cookie path, pass these as optional parameters to AdMob::set_cookie(). 
-  #   AdMob::set_cookie(request, cookies, :cookie_domain => 'example.com', :cookie_path => '/videos')
-  # You can NOT pass cookie_domain or cookie_path as optional parameters to AdMob::request()
   # AdMob recommends using a before_filter in your ActionController::Base class (usually in app/controllers/application.rb) to call set_cookie on each request.
   # Here is a sample application.rb.
   #   require 'admob'
@@ -110,30 +99,35 @@ module AdMob
   #       AdMob::set_cookie(request, cookies)
   #     end
   #   end
-  def self.set_cookie(request, cookies, params = {})
-    # don't make a new cookie if one already exists
-    return if request.env['admobuu'] or cookies[:admobuu]
+  def self.set_cookie(request, cookies, session)    
+    # First, see if the env or the cookies is set and return.
+    return cookies[:admobuu][0] if cookies[:admobuu]
+    
+    # Try the session for recovering the value next.  For unreliable handlers of cookies, this *SHOULD* allow us
+    # to maintain the admobuu across a flip-flopping session. 
+    return session[:admobuu] if !session[:admobuu].blank?
     
     # make a new cookie
-    ua = request.user_agent || ''
-    value = MD5.hexdigest(rand().to_s + ua + request.remote_ip + Time.now.to_f.to_s)
+    value = MD5.hexdigest(rand().to_s + request.user_agent + request.remote_ip + Time.now.to_f.to_s)
     new_cookie = { :value    => value,
                    :expires  => Time.at(0x7fffffff), # end of 32 bit time
-                   :path     => params[:cookie_path] || AdMob::Defaults.cookie_path || "/" }
+                   :path     => "/" }
     
-    domain = params[:cookie_domain] || AdMob::Defaults.cookie_domain
-    if domain
+    if AdMob::Defaults.cookie_domain
+      domain = AdMob::Defaults.cookie_domain
       domain = '.' + domain if domain[0].chr != '.'
       new_cookie[:domain] = domain
     end
     cookies[:admobuu] = new_cookie
     
-    # make this cookie visible to the current page
-    request.env['admobuu'] = value
+    session[:admobuu] = value
+    
+    # Return the value so we can manually set the environment if cookies aren't on
+    value
   end
   
   # Provides access to AdMob config, used for setting default request info.
-  # Currently, can be used to set defaults for: publisher_id, analytics_id, ad encoding, request timeout, cookie_domain, cookie_path
+  # Currently, can be used to set defaults for: publisher_id, analytics_id, ad encoding, request timeout, cookie_domain,
   # and whether exceptions are raised when something goes wrong.
   # For example, in environment.rb:
   #  require 'admob'
@@ -143,8 +137,7 @@ module AdMob
   #    c.encoding = 'SJIS'
   #    c.timeout = 3
   #    c.raise_exceptions = true
-  #    c.cookie_domain = 'example.com' # this can also be passed to AdMob::set_cookie() but not AdMob::request()
-  #    c.cookie_path = '/' # this can also be passed to AdMob::set_cookie() but not AdMob:request()
+  #    c.cookie_domain = 'example.com'
   #  end
   def self.config
     yield AdMob::Defaults
@@ -161,11 +154,11 @@ private
   # Stores default values for AdMob requests. Set these defaults via AdMob::config.
   class Defaults
     class << self
-      attr_accessor :publisher_id, :analytics_id, :encoding, :timeout, :raise_exceptions, :cookie_domain, :cookie_path
+      attr_accessor :publisher_id, :analytics_id, :encoding, :timeout, :raise_exceptions, :cookie_domain
     end
   end
 
-  def self.build_post_data(request, session_id, params)
+  def self.build_post_data(request, session, params)
     # Gather basic data
     publisher_id = params[:publisher_id] || AdMob::Defaults.publisher_id
     analytics_id = params[:analytics_id] || AdMob::Defaults.analytics_id
@@ -190,9 +183,9 @@ private
       'u'         => request.user_agent,
       'i'         => request.remote_ip,
       'p'         => request.request_uri,
-      't'         => MD5.hexdigest(session_id),
+      't'         => MD5.hexdigest(session),
       'v'         => PUBCODE_VERSION,
-      'o'         => (request.cookies['admobuu'] ? request.cookies['admobuu'][0] : request.env['admobuu']),
+      'o'         => request.cookies['admobuu'][0] || session[:admobuu],
       's'         => publisher_id,
       'a'         => analytics_id,
       'ma'        => params[:markup],
@@ -223,3 +216,4 @@ private
   end
 
 end
+
