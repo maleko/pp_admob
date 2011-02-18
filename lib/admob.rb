@@ -192,7 +192,7 @@ private
       'p'         => request.request_uri,
       't'         => MD5.hexdigest(session_id),
       'v'         => PUBCODE_VERSION,
-      'o'         => request.cookies['admobuu'] ? request.cookies['admobuu'][0] || request.env['admobuu'],
+      'o'         => request.cookies['admobuu'] ? request.cookies['admobuu'][0] : request.env['admobuu'],
       's'         => publisher_id,
       'a'         => analytics_id,
       'ma'        => params[:markup],
